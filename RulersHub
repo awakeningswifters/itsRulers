@@ -1,0 +1,359 @@
+wait (0.2)
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/xHeptc/Kavo-UI-Library/main/source.lua"))()
+
+local Window = Library.CreateLib("Ruler Hub | Basketball Zero", "DarkTheme")
+
+local MainTab = Window:NewTab("Main")
+local MainSection = MainTab:NewSection("Main Features")
+
+-- Variables
+local currentHitboxes = {}
+local hitboxSize = 5
+local perfectShotConnection = nil
+local teleportButton = nil
+local showScoreHitboxToggle = nil
+local showScoreHitbox = false
+local perfectShotEnabled = false
+local ballInScoringZone = false
+
+-- Performance optimization: Better caching system
+local cachedBall = nil
+local cachedHoops = {}
+local lastCacheUpdate = 0
+local cacheUpdateInterval = 3
+local updateCounter = 0
+local frameSkip = 15
+
+-- Services
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+
+-- Get local player
+local LocalPlayer = Players.LocalPlayer
+
+-- Debug function to find basketball and hoop objects
+local function findGameObjects()
+    print("=== DEBUGGING GAME OBJECTS ===")
+    
+    local possibleBalls = {}
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Part") and (string.lower(obj.Name):find("ball") or string.lower(obj.Name):find("basketball")) then
+            table.insert(possibleBalls, obj:GetFullName())
+        end
+    end
+    
+    local possibleHoops = {}
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Part") and (string.lower(obj.Name):find("hoop") or string.lower(obj.Name):find("basket") or string.lower(obj.Name):find("rim")) then
+            table.insert(possibleHoops, obj:GetFullName())
+        end
+    end
+    
+    print("Possible Balls found:")
+    for _, ball in pairs(possibleBalls) do
+        print("  - " .. ball)
+    end
+    
+    print("Possible Hoops found:")
+    for _, hoop in pairs(possibleHoops) do
+        print("  - " .. hoop)
+    end
+    
+    return possibleBalls, possibleHoops
+end
+
+-- Optimized ball finding with better caching
+local function findBall()
+    if cachedBall and cachedBall.Parent then
+        return cachedBall
+    end
+    
+    local searchNames = {"Basketball", "Ball", "basketball", "ball"}
+    
+    for _, name in pairs(searchNames) do
+        local obj = workspace:FindFirstChild(name, true)
+        if obj and obj:IsA("BasePart") then
+            cachedBall = obj
+            return obj
+        end
+    end
+    
+    -- Fallback search
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and string.lower(obj.Name):find("ball") then
+            cachedBall = obj
+            return obj
+        end
+    end
+    
+    cachedBall = nil
+    return nil
+end
+
+-- Optimized hoop finding
+local function findAllHoops()
+    local currentTime = tick()
+    
+    if currentTime - lastCacheUpdate < cacheUpdateInterval and #cachedHoops > 0 then
+        local validHoops = {}
+        for _, hoop in pairs(cachedHoops) do
+            if hoop and hoop.Parent then
+                table.insert(validHoops, hoop)
+            end
+        end
+        
+        if #validHoops > 0 then
+            cachedHoops = validHoops
+            return cachedHoops
+        end
+    end
+    
+    local hoops = {}
+    local searchNames = {"Hoop", "Basket", "Rim", "hoop", "basket", "rim"}
+    
+    for _, name in pairs(searchNames) do
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and obj.Name == name then
+                table.insert(hoops, obj)
+                if #hoops >= 2 then break end
+            end
+        end
+        if #hoops >= 2 then break end
+    end
+    
+    if #hoops == 0 then
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and (string.lower(obj.Name):find("hoop") or string.lower(obj.Name):find("basket") or string.lower(obj.Name):find("rim")) then
+                table.insert(hoops, obj)
+                if #hoops >= 2 then break end
+            end
+        end
+    end
+    
+    cachedHoops = hoops
+    lastCacheUpdate = currentTime
+    
+    return hoops
+end
+
+-- Function to teleport ball through closest hoop
+local function teleportBallThroughClosestHoop(ball)
+    if not ball then return end
+    
+    local hoops = findAllHoops()
+    if #hoops == 0 then return end
+    
+    local closestHoop = nil
+    local closestDistance = math.huge
+    
+    for _, hoop in pairs(hoops) do
+        local distance = (ball.Position - hoop.Position).Magnitude
+        if distance < closestDistance then
+            closestDistance = distance
+            closestHoop = hoop
+        end
+    end
+    
+    if closestHoop then
+        ball.CFrame = CFrame.new(closestHoop.Position + Vector3.new(0, -3, 0))
+        ball.Velocity = Vector3.new(0, -15, 0)
+        print("Ball teleported through closest hoop!")
+        ballInScoringZone = false
+    end
+end
+
+local function updateScoreHitbox()
+    for _, hitbox in pairs(currentHitboxes) do
+        if hitbox and hitbox.Parent then
+            hitbox:Destroy()
+        end
+    end
+    currentHitboxes = {}
+    
+    if showScoreHitbox and perfectShotEnabled then
+        local hoops = findAllHoops()
+        
+        for i, hoop in pairs(hoops) do
+            local hitbox = Instance.new("Part")
+            hitbox.Size = Vector3.new(hitboxSize, hitboxSize, hitboxSize)
+            hitbox.Position = hoop.Position
+            hitbox.Transparency = 0.7
+            hitbox.CanCollide = false
+            hitbox.Anchored = true
+            hitbox.Parent = workspace
+            hitbox.Name = "ScoringHitbox_" .. i
+            hitbox.BrickColor = BrickColor.new("Bright red")
+            
+            table.insert(currentHitboxes, hitbox)
+
+            local connection = hitbox.Touched:Connect(function(hit)
+                local ball = findBall()
+                if ball and hit == ball and not ballInScoringZone then
+                    print("GOAL! Ball entered scoring hitbox at hoop " .. i .. "!")
+                    ballInScoringZone = true
+                    
+                    task.spawn(function()
+                        task.wait(0.1)
+                        if ball.Parent then
+                            ball.CFrame = CFrame.new(hoop.Position + Vector3.new(0, -3, 0))
+                            ball.Velocity = Vector3.new(0, -15, 0)
+                        end
+                        
+                        task.wait(0.5)
+                        ballInScoringZone = false
+                    end)
+                end
+            end)
+        end
+        
+        print("Created 1 red hitbox for each of " .. #hoops .. " hoops!")
+    end
+end
+
+MainSection:NewToggle("Activate Teleport", "Toggle teleporting to basketball", function(state)
+    if state then
+        print("Teleport Toggle On")
+        
+        teleportButton = MainSection:NewButton("Teleport to Ball", "Click to teleport to the basketball", function()
+            local player = game.Players.LocalPlayer
+            local character = player.Character or player.CharacterAdded:Wait()
+            local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+            local ball = findBall()
+
+            if ball and humanoidRootPart then
+                humanoidRootPart.CFrame = ball.CFrame + Vector3.new(0, 5, 0)
+                print("Teleported to the basketball!")
+            else
+                warn("Could not teleport - Ball or HumanoidRootPart not found")
+            end
+        end)
+    else
+        print("Teleport Toggle Off")
+    end
+end)
+
+MainSection:NewToggle("Perfect Shot", "Makes every shot go in the hoop", function(state)
+    perfectShotEnabled = state
+    
+    if state then
+        print("Perfect Shot Activated")
+        
+        if not showScoreHitboxToggle then
+            showScoreHitboxToggle = MainSection:NewToggle("Show Score Hitbox", "Show red hitbox for scoring detection", function(hitboxState)
+                showScoreHitbox = hitboxState
+                updateScoreHitbox()
+                
+                if hitboxState then
+                    print("1 red hitbox now visible per hoop")
+                else
+                    print("Score hitboxes hidden")
+                end
+            end)
+        end
+        
+        perfectShotConnection = RunService.Heartbeat:Connect(function()
+            updateCounter = updateCounter + 1
+            if updateCounter % frameSkip ~= 0 then
+                return
+            end
+            
+            local ball = findBall()
+            if not ball or ballInScoringZone then
+                return
+            end
+            
+            local ballVelocity = ball.Velocity
+            if ballVelocity.Magnitude < 5 then
+                return
+            end
+            
+            local hoops = findAllHoops()
+            if #hoops == 0 then
+                return
+            end
+            
+            local closestHoop = nil
+            local closestDistance = math.huge
+            
+            for _, hoop in pairs(hoops) do
+                local distance = (ball.Position - hoop.Position).Magnitude
+                if distance < closestDistance then
+                    closestDistance = distance
+                    closestHoop = hoop
+                end
+            end
+            
+            if closestHoop and closestDistance < 25 then
+                local targetPosition = closestHoop.Position + Vector3.new(0, 0.5, 0)
+                local direction = (targetPosition - ball.Position).Unit
+                
+                if ball.Position.Y > closestHoop.Position.Y - 8 then
+                    local success, err = pcall(function()
+                        local targetVelocity = direction * math.max(ballVelocity.Magnitude, 18)
+                        ball.Velocity = ballVelocity:Lerp(targetVelocity, 0.3)
+                    end)
+                    
+                    if not success then
+                        warn("Perfect shot guidance failed:", err)
+                    end
+                end
+            end
+            
+            local nearAnyHoop = false
+            for _, hoop in pairs(hoops) do
+                if (ball.Position - hoop.Position).Magnitude < hitboxSize * 3 then
+                    nearAnyHoop = true
+                    break
+                end
+            end
+            
+            if not nearAnyHoop then
+                ballInScoringZone = false
+            end
+        end)
+        
+        updateScoreHitbox()
+    else
+        print("Perfect Shot Deactivated")
+        
+        if perfectShotConnection then
+            perfectShotConnection:Disconnect()
+            perfectShotConnection = nil
+        end
+        
+        cachedBall = nil
+        cachedHoops = {}
+        showScoreHitbox = false
+        ballInScoringZone = false
+        updateScoreHitbox()
+        
+        print("Perfect Shot disabled - All hitboxes hidden")
+    end
+end)
+
+MainSection:NewSlider("Hitbox Size", "Adjust the size of the scoring hitbox", 30, 1, function(value)
+    hitboxSize = value
+    if showScoreHitbox and perfectShotEnabled then
+        updateScoreHitbox()
+    end
+    print("Hitbox size set to: " .. value)
+end)
+
+MainSection:NewButton("Force Ball Through Hoop (ill fix it later)", "Manually teleport ball through closest hoop", function()
+    local ball = findBall()
+    
+    if ball then
+        teleportBallThroughClosestHoop(ball)
+    else
+        warn("Could not find ball for manual teleport")
+    end
+end)
+
+local UITab = Window:NewTab("Toggle UI")
+local UISection = UITab:NewSection("Toggling The UI")
+
+UISection:NewKeybind("Toggle UI", "Toggle UI On/Off", Enum.KeyCode.K, function()
+	Library:ToggleUI()
+end)
